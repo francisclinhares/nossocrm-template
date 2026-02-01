@@ -42,26 +42,70 @@ const SetupWizard: React.FC = () => {
         setError(null);
 
         try {
-            // Chamar Edge Function para setup (usa SERVICE_ROLE_KEY)
-            const { data, error } = await supabase.functions.invoke('setup-instance', {
-                body: { companyName, email, password }
+            // PASSO 1: Criar o usuário via Supabase Auth
+            console.log('Criando usuário...');
+            const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+                email,
+                password,
+                options: {
+                    data: {
+                        role: 'pending_setup',
+                        company_name: companyName
+                    }
+                }
             });
 
-            if (error) throw error;
-            if (data?.error) throw new Error(data.error);
+            if (signUpError) {
+                throw new Error(`Erro ao criar usuário: ${signUpError.message}`);
+            }
 
-            // Setup concluído, fazer login
-            const { error: signInError } = await supabase.auth.signInWithPassword({
+            if (!signUpData.user) {
+                throw new Error('Usuário não foi criado corretamente');
+            }
+
+            console.log('Usuário criado com sucesso:', signUpData.user.id);
+
+            // PASSO 2: Fazer login para obter a sessão
+            console.log('Fazendo login...');
+            const { data: sessionData, error: sessionError } = await supabase.auth.signInWithPassword({
                 email,
                 password
             });
 
-            if (signInError) throw signInError;
+            if (sessionError) {
+                throw new Error(`Erro ao fazer login: ${sessionError.message}`);
+            }
 
+            if (!sessionData.session) {
+                throw new Error('Sessão não foi criada');
+            }
+
+            console.log('Login realizado, token obtido');
+
+            // PASSO 3: Chamar Edge Function com o token JWT
+            console.log('Chamando setup-instance...');
+            const { data, error: functionError } = await supabase.functions.invoke('setup-instance', {
+                body: { companyName },
+                headers: {
+                    Authorization: `Bearer ${sessionData.session.access_token}`
+                }
+            });
+
+            if (functionError) {
+                console.error('Erro na Edge Function:', functionError);
+                throw new Error(`Erro no setup: ${functionError.message}`);
+            }
+
+            if (data?.error) {
+                throw new Error(data.error);
+            }
+
+            console.log('Setup concluído com sucesso:', data);
+
+            // PASSO 4: Atualizar contexto e redirecionar
             await checkInitialization();
             navigate('/');
-            await checkInitialization();
-            navigate('/');
+
         } catch (err) {
             console.error('Setup error:', err);
             setError(getErrorMessage(err));
